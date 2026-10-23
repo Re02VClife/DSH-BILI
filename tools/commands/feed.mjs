@@ -9,6 +9,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import { normalizeWatchlist, resolveWatchlist } from '../lib/watchlist.mjs'
+import { loadTaste, tasteIndex, tasteBoost, tasteExcluded, tasteSummary, tasteAgeHours } from '../lib/taste.mjs'
 import crypto from 'node:crypto'
 
 const argv = process.argv.slice(2)
@@ -175,14 +177,48 @@ const hitsOf = (title) => prefTokens.filter((p) => p.tokens.some((tok) => title.
 const densityOf = (x) => Math.log10(1 + x.dm / Math.max(30, x.d))
 // 2026-10-20：排除她自己的视频（实测刷到过自己的《大肥鱼成精了》✗ 别让自己看自己）
 const selfName = String(config().self?.name ?? "")
-const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
+
+// ── 口味源（2026-10-21 v0.5）：主人/自己的关注 + 收藏 + 历史 ─────────────────
+//   两个作用：① 收藏过/看过的**直接排除**；② 关注的人和学到的口味词**加分**。
+//   档案是 `taste sync` 落盘的（~/.bili-ai/taste.json）；没同步过就退化成原来的逻辑 ✓
+const tasteCfg = config().taste ?? {}
+const taste = tasteCfg.enabled === false ? null : loadTaste()
+const tIdx = taste ? tasteIndex(taste) : null
+const tasteAge = taste ? tasteAgeHours(taste) : null
+if (taste && tasteAge !== null && tasteAge > 7 * 24) {
+  console.error(`  · 口味档案 ${Math.round(tasteAge / 24)} 天没同步了 → node bili.mjs taste sync`)
+}
+
+const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x.t).length * 4 + boostOf(x.t) + (tIdx ? tasteBoost(x, tIdx, tasteCfg) : 0)
+
+// ── 指定清单（2026-10-21 v0.4）：主人点名的，永远排最前 ────────────────────
+//   ⚠️ 指定视频**即使看过也保留** —— 是主人点名的，可能就是想再看一遍，标出来即可；
+//      指定 UP 的新投稿照常排除看过的（否则每天推同一条 ✗）。
+const wl = normalizeWatchlist(config().watchlist)
+let forced = []
+if (wl.ups.length || wl.videos.length) {
+  const r = await resolveWatchlist(cred, wl, { perUp: 8, log: (m) => console.error('  · ' + m) })
+  forced = r.items
+    .filter((x) => x.kw === '指定视频' || !(seen.has(x.bv) || likedBVs.has(x.bv) || favBVs.has(x.bv)))
+    .filter((x) => !(selfName && String(x.up ?? "").includes(selfName)))
+    .map((x) => ({ ...x, _hits: hitsOf(x.t), _score: scoreOf(x), _forced: true, _seen: seen.has(x.bv) }))
+  // 同一个 BV 被「UP 最新」和「指定视频」同时点到 → 留先出现的那条（指定视频优先，它先入列）
+  forced = [...new Map(forced.map((x) => [x.bv, x])).values()]
+  console.error(`[指定] UP ${wl.ups.length} 个 / 视频 ${wl.videos.length} 条 → 可用 ${forced.length} 条（取不到 ${r.errors.length}）`)
+}
+
+const dedup = [...new Map(pool.map((x) => [x.bv, x])).values()]
   .filter((x) => !seen.has(x.bv) && !likedBVs.has(x.bv) && !favBVs.has(x.bv))
   .filter((x) => !(selfName && String(x.up ?? "").includes(selfName)))
-const scoreOf = (x) => densityOf(x) * 3 + hitsOf(x.t).length * 4 + boostOf(x.t)
+const tasteSkipped = tIdx ? dedup.filter((x) => tasteExcluded(x, tIdx, tasteCfg)).length : 0
+const uniq = dedup
+  .filter((x) => !forced.some((f) => f.bv === x.bv))
+  .filter((x) => !(tIdx && tasteExcluded(x, tIdx, tasteCfg)))
 uniq.sort((a, b) => scoreOf(b) - scoreOf(a))
 for (const x of uniq) { x._hits = hitsOf(x.t); x._score = scoreOf(x) }
 
 // 多样性：同一"命中和类"最多 PER 条；完全没命中的最多 1 条（防凑数 ✗）
+//   （只作用于自由浏览那部分；点名的不抽稀 ✓）
 const kindUsed = {}
 const diversified = []
 for (const x of uniq) {
@@ -195,16 +231,26 @@ for (const x of uniq) {
 
 console.log(`偏好（来自日记）: ${prefs.join(' · ')}`)
 console.log(`反馈回流: 被赞 ${likedEvents.length} 条 · 她收藏 ${favItems.length} 条 → 学会 ${learnedTokens.length} 个主题词`)
-console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV`)
+console.log(`口味源: ${taste ? tasteSummary(taste) : '未启用（设置页「口味源」打开，或跑 taste sync）'}`)
+console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV${tasteSkipped ? ` · 口味档案再排除 ${tasteSkipped} 条` : ''}`)
+console.log(`指定清单: UP ${wl.ups.length} 个 · 视频 ${wl.videos.length} 条 → 本轮可用 ${forced.length} 条`)
 console.log(`候选池: ${pool.length} 条 → 去重去已看后 ${uniq.length} 条\n`)
-console.log(`今天可以看这几条（每词最多 ${PER} 条，共 ${N} 条）：`)
-const perKw = {}
+console.log(`今天可以看这几条（★ = 你点名的，必看；其余每词最多 ${PER} 条，共 ${N} 条）：`)
 let shown = 0
+const printed = new Set()
+for (const x of forced) {
+  shown += 1
+  printed.add(x.bv)
+  const tag = x.kw === '指定视频' ? '指定视频' : '指定UP'
+  const seenTag = x._seen ? '  [看过]' : ''
+  console.log(`  ★${String(shown).padStart(2)}. ${x.bv}  ${String(x.d).padStart(4)}s  弹幕${String(x.dm ?? 0).padStart(7)}  播放${String(x.play).padStart(9)}  ${x.t.slice(0, 40)}  @${x.up} [${tag}]${seenTag}${x.note ? ' · ' + x.note : ''}`)
+}
 for (const x of diversified) {
   if (shown >= N) break
-  perKw[x.kw] = perKw[x.kw] ?? 0
-  // 多样性已在上一步做过 → 这里不再二次限流 ✓
-  perKw[x.kw] += 1; shown += 1
-  console.log(`  ${String(shown).padStart(2)}. ${x.bv}  ${String(x.d).padStart(4)}s  弹幕${String(x.dm).padStart(7)}  播放${String(x.play).padStart(9)}  ${x.t.slice(0, 40)}  @${x.up} ${x._hits.length ? "[" + x._hits.join("+") + "]" : ""}`)
+  if (printed.has(x.bv)) continue
+  printed.add(x.bv)
+  shown += 1
+  console.log(`   ${String(shown).padStart(2)}. ${x.bv}  ${String(x.d).padStart(4)}s  弹幕${String(x.dm).padStart(7)}  播放${String(x.play).padStart(9)}  ${x.t.slice(0, 40)}  @${x.up} ${x._hits.length ? "[" + x._hits.join("+") + "]" : ""}`)
 }
 console.log('\n看完跑：node bili.mjs debrief <BV>   → 然后把"想法"写进日记的「想说」区（不发）')
+

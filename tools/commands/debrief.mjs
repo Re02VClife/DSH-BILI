@@ -1,6 +1,6 @@
 // 「看懂视频」一条龙：封面 + 简介 + 官方字幕 + 弹幕热区 + 热评 + 画面抽帧，六路齐出。
 //
-// 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8]
+// 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8] [--budget 12000] [--asr]
 // 产出: 终端摘要 + 封面图 + 字幕 TXT + 弹幕对齐表 + 九宫格/字幕带（后三者交给 read_image / 模型合成）
 //
 // 设计（2026-10-14，主人定义为「看懂视频」大模块）：
@@ -18,13 +18,22 @@ import zlib from 'node:zlib'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { planVideo, appendSpend } from '../lib/budget.mjs'
+import { resolveSubtitleTracks, pickTrack, parseAsrTxt } from '../lib/subtitles.mjs'
 
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => !a.startsWith('--'))
 if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames]'); process.exit(2) }
+// 2026-10-21 修：以前最后一个参数是裸旗标（`--no-frames` 放行尾）时，
+//   `argv[i+1]` 是 undefined → 取到 undefined → `!opt['no-frames']` 为 true → **等于没关** ✗
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
-  if (argv[i].startsWith('--')) opt[argv[i].slice(2)] = argv[i + 1]?.startsWith('--') ? true : argv[++i]
+  if (!argv[i].startsWith('--')) continue
+  const key = argv[i].slice(2)
+  const next = argv[i + 1]
+  if (next === undefined || String(next).startsWith('--')) { opt[key] = true; continue }
+  opt[key] = next
+  i += 1
 }
 const BUCKET = Number(opt.bucket ?? 30)
 const TOP = Number(opt.top ?? 5)
@@ -56,7 +65,12 @@ const cred = JSON.parse(fs.readFileSync(path.join((process.env.USERPROFILE || pr
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const cookie = `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`
 const H = { 'user-agent': UA, referer: `https://www.bilibili.com/video/${bvid}/`, cookie }
-const jget = async (u) => (await fetch(u, { headers: H })).json()
+// 2026-10-21：非 JSON（412 风控回 HTML）不该炸成一屏 stack —— 退化成 {code:-1}，后面各分支照常降级
+const jget = async (u) => {
+  const r = await fetch(u, { headers: H })
+  const text = await r.text()
+  try { return JSON.parse(text) } catch { return { code: -1, message: `非 JSON（HTTP ${r.status}）` } }
+}
 
 // WBI（与其它脚本一致）
 const MIXIN_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52]
@@ -92,21 +106,56 @@ try {
 } catch (e) { console.log(`\n封面下载失败：${e.message}`) }
 
 // ── ③ 官方字幕 ──
-let subs = (await jget(`https://api.bilibili.com/x/player/wbi/v2?${wbi({ bvid, cid })}`))?.data?.subtitle?.subtitles ?? []
+// 2026-10-21：改成共用回退链（WBI → 旧 player/v2 → web/view）。
+//   实测 BV1x3nw6KEj2：WBI 返回 0 条，旧端点却有一条 ai-zh —— 只走 WBI 会把"有字幕"误判成"没字幕" ✗
+const { tracks: subs, source: subSource, fallback: subFallback } = await resolveSubtitleTracks({
+  jget, bvid, cid, aid, wbi, log: (m) => console.error('  · ' + m),
+})
 let body = []
 if (subs.length) {
-  const pick = subs.find((s) => s.lan === 'ai-zh') ?? subs.find((s) => s.lan === 'zh-CN') ?? subs[0]
+  const pick = pickTrack(subs)
   const url = String(pick.subtitle_url).startsWith('http') ? pick.subtitle_url : 'https:' + pick.subtitle_url
   const r = await fetch(url, { headers: { 'user-agent': UA, referer: `https://www.bilibili.com/video/${bvid}/` } })
   if (r.ok) { try { body = (JSON.parse(await r.text()).body ?? []) } catch {} }
 }
+// 2026-10-21 v0.6：B站没字幕时，用**本地转写**兜底（先跑 `node bili.mjs asr <BV>`）
+//   为什么不在 debrief 里直接跑 ASR：一次转写要几分钟，debrief 该保持"秒级出素材" ✓
+if (!body.length && opt.asr) {
+  const asrFile = path.join(shots, 'subs', `${bvid}-asr.txt`)
+  if (fs.existsSync(asrFile)) {
+    body = parseAsrTxt(fs.readFileSync(asrFile, 'utf8'))
+    console.log(`\n（B站无字幕 → 用本地转写：${asrFile}）`)
+  } else {
+    console.log(`\n（--asr 但还没有本地转写 —— 先跑：node bili.mjs asr ${bvid}）`)
+  }
+}
 const subFile = path.join(shots, 'subs', `${bvid}-debrief.txt`)
+
+// ── 预算（2026-10-21 v0.4）：「单次视频」的 token 上限在这里生效 ──────────────
+//   模型读多少，取决于**我们吐了多少** —— 所以字幕文件在落盘那一刻就按预算裁好：
+//   留头（70%）+ 留尾（25%），中间标明省略；超了就先砍抽帧，再砍热评，最后才截字幕。
+//   ⚠️ 这是"把水龙头拧小"，不是事后记账；估算口径偏保守（中文按 1 字≈1 token）。
+const budgetTokens = Number(opt.budget ?? config().budget?.videoMaxTokens ?? 12000)
+const subAll = body.map((l) => `[${fmt(l.from)}] ${l.content}`).join('\n')
+// 热评还没拉，先按上限估（一条 160 字 × NCOM 条）——宁可多留预算，别读一半又超
+const plan = planVideo({
+  subText: subAll,
+  commentText: '评'.repeat(Math.max(0, NCOM) * 160),
+  wantFrames: !opt['no-frames'],
+  budgetTokens,
+  maxComments: NCOM,
+})
 console.log('\n══════════ ③ 官方字幕（它到底说了什么）══════════')
 if (body.length) {
-  fs.writeFileSync(subFile, body.map((l) => `[${fmt(l.from)}] ${l.content}`).join('\n'))
-  console.log(`有字幕：${body.length} 行（${fmt(body[0].from)} → ${fmt(body.at(-1).to ?? body.at(-1).from)}）→ ${subFile}`)
+  fs.writeFileSync(subFile, plan.subText)
+  console.log(`有字幕：${body.length} 行（${fmt(body[0].from)} → ${fmt(body.at(-1).to ?? body.at(-1).from)}）→ ${subFile}${subFallback ? `（WBI 没给，走的是 ${subSource}）` : ''}`)
+  if (plan.degraded.length) console.log(`  预算 ${budgetTokens}：${plan.degraded.join('；')}`)
 } else {
   console.log('✗ 无官方字幕轨道 → 这一路缺失，只能靠弹幕 + 热评 + 画面（这正是要六路互补的原因）')
+  // 2026-10-21：新视频常常"还没生成"而不是"永远没有"——实测同一 UP 前一天的那期有 612 行 ai-zh
+  const ageH = Math.max(0, (Date.now() / 1000 - Number(d.pubdate ?? 0)) / 3600)
+  if (ageH < 48) console.log(`  ⏳ 这条发布才 ${ageH.toFixed(0)} 小时：B站 AI 字幕常要几小时到一天才出，**过一阵重跑一次**多半就有 ✓`)
+  if (!opt.asr) console.log(`  也可以本地转写：node bili.mjs asr ${bvid} → 再 debrief --asr ✓（不上传音频）`)
 }
 const subAt = (t) => {
   if (!body.length) return null
@@ -196,14 +245,18 @@ try {
   const rep = await jget(`https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=2&ps=${NCOM}&pn=1`)
   const list = rep?.data?.replies ?? []
   if (!list.length) console.log(`（没取到热评：code=${rep?.code}）`)
-  for (const r of list) {
+  const showN = Math.min(list.length, plan.comments)
+  for (const r of list.slice(0, showN)) {
     const txt = String(r.content?.message ?? '').replace(/\n+/g, ' ').slice(0, 160)
     console.log(`  👍${String(r.like).padStart(5)}  回复${String(r.rcount ?? 0).padStart(3)}  ${r.member?.uname}: ${txt}`)
   }
+  if (list.length > showN) console.log(`（预算所限：热评 ${list.length} 条 → 只给 ${showN} 条）`)
 } catch (e) { console.log(`（热评拉取失败：${e.message}）`) }
 
 // ── ⑥ 画面抽帧（交给 read_image）──
-if (!opt['no-frames']) {
+//   2026-10-21：抽帧是**固定的大头**（一张九宫格按 5400 token 保守算）。
+//   预算不够时先砍它 —— 砍掉的会明说原因，不静默降级 ✗
+if (plan.frames) {
   console.log('\n══════════ ⑥ 画面（长什么样）══════════')
   let sheet = null
   try {
@@ -240,7 +293,17 @@ if (!opt['no-frames']) {
       }
     } catch (e) { console.log(`（字幕条失败：${String(e.message).slice(0, 200)}）`) }
   }
+} else if (!opt['no-frames'] && !plan.frames) {
+  // 只有「本来想抽帧、被预算拦下」才说；--no-frames 是主人自己关的，不用解释 ✓
+  console.log(`\n══════════ ⑥ 画面（本轮不抽帧）══════════`)
+  const why = plan.degraded.find((s) => s.includes('抽帧')) || `预算 ${budgetTokens} 装不下「文字 + 抽帧」`
+  console.log(`  原因：${why}`)
+  console.log('  想强制看画面：`--budget 30000` 或设置页把「单次视频」调大 ✓')
 }
+
+// ── 账单（估算口径，读之前就记）：给 budget status / 唤醒提示用 ────────────────
+appendSpend({ kind: 'video', bv: bvid, est: plan.est, frames: plan.frames, subChars: subAll.length, budget: budgetTokens })
+console.log(`\n【预算】这一条估算 ${plan.est} / 上限 ${budgetTokens} token（字幕 ${subAll.length} 字 · 热评 ${Math.min(NCOM, plan.comments)} 条 · 抽帧 ${plan.frames ? '是' : '否'}）`)
 
 // ── 评分卡（--score）（2026-10-18 加，Kimi 提议）────────────────────
 // 目的：把"值不值"变成可审计的结构化判断；分数留进日记，一个月后能回看"当初为什么觉得值得"

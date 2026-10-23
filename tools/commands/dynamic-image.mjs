@@ -9,6 +9,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+// 2026-10-21 修：下面第 144 行用了 gate()，但上游漏了这行 import →
+//   ReferenceError: gate is not defined（图片传完、动态没发出去 ✗）
+import { gate } from '../lib/quota-gate.mjs'
 
 const argv = process.argv.slice(2)
 const args = new Map()
@@ -115,6 +118,9 @@ const fd = new FormData()
 const mime = kind === 'png' ? 'image/png' : kind === 'jpg' ? 'image/jpeg' : 'image/gif'
 fd.append('file_up', new Blob([buf], { type: mime }), `upload.${kind}`)
 fd.append('category', 'daily')
+// 2026-10-21 修（关键）：少了 biz=new_dyn，接口照样回 code=0 和 image_url，
+//   但文件**不进 new_dyn 存储** → 那条 URL 之后 404，动态里只剩一张破图 ✗
+fd.append('biz', 'new_dyn')
 fd.append('csrf', String(cred.bili_jct))
 const up = await fetch('https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs', {
   method: 'POST',
@@ -126,6 +132,15 @@ console.log(`     HTTP ${up.status}  code=${upJson.code} ${upJson.message ?? ''}
 if (upJson.code !== 0) { console.error(`     上传失败: ${JSON.stringify(upJson).slice(0, 300)}`); process.exit(6) }
 const { image_url: imgSrc, image_width: w, image_height: h, img_size: kb } = upJson.data ?? {}
 console.log(`     image_url=${imgSrc}  ${w}x${h}  ${kb}KB`)
+// 上传完立刻回读一次：拿不到 200 就不发（否则会发一条只有破图的动态 ✗）
+try {
+  const probe = await fetch(imgSrc, { headers: { 'user-agent': UA, referer: 'https://www.bilibili.com/' } })
+  console.log(`     回读图片: HTTP ${probe.status} ${probe.headers.get('content-type') ?? ''}`)
+  if (!probe.ok) { console.error('     ✗ 图片 URL 不可访问（多半是上传缺 biz=new_dyn）→ 停止发布'); process.exit(6) }
+} catch (e) {
+  console.error(`     ✗ 图片回读失败：${String(e.message).slice(0, 120)} → 停止发布`)
+  process.exit(6)
+}
 
 console.log('\n[2/2] 发布图文动态…')
 const contents = []
