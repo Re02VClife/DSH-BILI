@@ -15,6 +15,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { findByText, apiMap, load as loadEmotes } from '../lib/emotes.mjs'
 
 // ── 限额闸（B 档「限额自主」的代码强制部分，2026-10-14 主人选 B 档）────────────────
 // 语义：闸门**只管自主发言**（带 --auto，即"她自己决定说的"）；主人当场授权的发言不拦 ✓
@@ -70,9 +71,42 @@ const type = String(args.get('type') ?? '1')
 const refererArg = args.get('referer') ? String(args.get('referer')) : ''
 const dry = args.get('dry') === true || args.has('dry')
 const go = args.get('go') === true || args.has('go')
+// --emote 可重复：--emote "[笑哭]" --emote "[doge]"
+//   （普通 Map 解析会把重复参数覆盖成最后一个，所以这里单独扫一遍原始 argv）
+//   表情不是图片上传，是"正文里的转义符 + emote 元数据"，词表来自 ~/.dsh/whale-emotes.json
+const EMOTES = []
+for (let i = 2; i < process.argv.length; i += 1) {
+  if (process.argv[i] === '--emote' && process.argv[i + 1] && !process.argv[i + 1].startsWith('--')) EMOTES.push(process.argv[i + 1])
+}
+// --emote-file（2026-10-22，实验）：自定义表情的元数据（JSON：`[名字]` → {url,…}）
+//   ⚠️ 实测这条路 B站 **不认**（2026-10-22，发出去后 content.emote 里没有我们的键，
+//   评论只剩字面 [名字]）→ 别再用了。评论带图走下面的 --picture-file ✓
+const EMOTE_FILE = args.get('emote-file') ? String(args.get('emote-file')) : ''
+let CUSTOM_EMOTES = null
+if (EMOTE_FILE) {
+  try { CUSTOM_EMOTES = JSON.parse(fs.readFileSync(EMOTE_FILE, 'utf8').replace(/^\uFEFF/, '')) } catch (e) {
+    console.error(`读不了 --emote-file：${e.message}`); process.exit(2)
+  }
+  if (!CUSTOM_EMOTES || typeof CUSTOM_EMOTES !== 'object') { console.error('--emote-file 必须是对象'); process.exit(2) }
+}
+
+// --picture-file（2026-10-22）：**评论带图**（B站 支持，评论条目里就是 content.pictures）
+//   参数形状（官方文档「评论条目」里的 pictures[]）：img_src / img_width / img_height / img_size
+//   图先上传到 B站 CDN（upload_bfs）拿到 img_src，再把整个数组塞进 pictures 字段 ✓
+const PICTURE_FILE = args.get('picture-file') ? String(args.get('picture-file')) : ''
+let PICTURES = null
+if (PICTURE_FILE) {
+  try { PICTURES = JSON.parse(fs.readFileSync(PICTURE_FILE, 'utf8').replace(/^\uFEFF/, '')) } catch (e) {
+    console.error(`读不了 --picture-file：${e.message}`); process.exit(2)
+  }
+  if (!Array.isArray(PICTURES) || !PICTURES.length) { console.error('--picture-file 必须是非空数组'); process.exit(2) }
+  for (const p of PICTURES) {
+    if (!p || !p.img_src) { console.error('--picture-file 每项都要有 img_src'); process.exit(2) }
+  }
+}
 
 if (!oid || (!bvid && !refererArg) || !message) {
-  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11] [--root <rpid> --parent <rpid>] [--dry | --go]')
+  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--emote "[笑哭]"] [--type 1|11] [--root <rpid> --parent <rpid>] [--dry | --go]')
   process.exit(2)
 }
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }
@@ -198,9 +232,54 @@ console.log(`  账号: ${nav.data.uname}   (mid ${nav.data.mid})`)
 console.log(`  手机绑定: ${nav.data.mobile_verified ? '是' : '否'}   硬币 ${nav.data.money}`)
 console.log('  ⚠️ 请确认这就是你的小号；若是主号，停手、换 cookie')
 
+// ── 表情（--emote）───────────────────────────────────────────────────────
+// 转义符必须在正文里，且 emote 字段要带同样的元数据；两边对不上服务端就只当纯文本。
+let emoteParam = null
+{
+  const map = {}
+  if (EMOTES.length) {
+    if (!loadEmotes()) {
+      console.error('本地还没有表情库 → 先跑：node bili.mjs emotes sync')
+      process.exit(2)
+    }
+    const picked = []
+    for (const raw of EMOTES) {
+      const text = `[${String(raw).replace(/^\[|\]$/g, '')}]`
+      const e = findByText(text)
+      if (!e) {
+        console.error(`✗ 表情库里没有 ${text} —— 用 node bili.mjs emotes search <词> 找一个真存在的`)
+        process.exit(2)
+      }
+      if (!String(message).includes(text)) message = `${message}${text}`
+      picked.push(e)
+    }
+    Object.assign(map, apiMap(picked))
+    console.log(`[表情] ${picked.map((e) => `${e.text}(id=${e.id}/pkg=${e.package_id})`).join(' ')} → 已写入 emote 字段`)
+  }
+  if (CUSTOM_EMOTES) {
+    // 自定义表情：转义符必须也在正文里（不然服务端没东西可替换，等于没发）
+    for (const [text, meta] of Object.entries(CUSTOM_EMOTES)) {
+      if (!String(message).includes(text)) message = `${message}${text}`
+      map[text] = meta
+    }
+    console.log(`[表情·自定义] ${Object.keys(CUSTOM_EMOTES).join(' ')}（实验：服务端可能不认）`)
+  }
+  if (Object.keys(map).length) emoteParam = JSON.stringify(map)
+}
+
 const params = { type, oid: String(oid), message, plat: '1', csrf: String(cred.bili_jct) }
+if (PICTURES) {
+  params.pictures = JSON.stringify(PICTURES.map((p) => ({
+    img_src: String(p.img_src),
+    img_width: Number(p.img_width ?? 0) || 0,
+    img_height: Number(p.img_height ?? 0) || 0,
+    img_size: Number(p.img_size ?? 0) || 0,
+  })))
+  console.log(`[图片] ${PICTURES.length} 张 → pictures 字段（B站 的「评论带图」）`)
+}
 if (root) params.root = String(root)
 if (parent) params.parent = String(parent)
+if (emoteParam) params.emote = emoteParam
 const signed = await wbiSign(params)
 const body = new URLSearchParams(params).toString()
 const url = signed
@@ -213,7 +292,7 @@ console.log('  content-type: application/x-www-form-urlencoded')
 console.log('  headers: UA(Chrome 131) + referer=' + referer)
 console.log('  cookie : SESSDATA=***; bili_jct=***; buvid3=***   (已脱敏)')
 console.log('  body   : ' + body.replace(encodeURIComponent(String(cred.bili_jct)), '***csrf***'))
-console.log(`  正文长度 ${message.length} 字符（上限 1000）；oid=${oid}；emoji/表情需转义符，本脚本只发纯文本`)
+console.log(`  正文长度 ${message.length} 字符（上限 1000）；oid=${oid}；表情：${emoteParam ? EMOTES.join(' ') + '（emote 字段已带）' : '无（纯文本）'}`)
 
 if (dry) {
   console.log('\n[dry] 未发送。确认文案与账号后，把 --dry 换成 --go 再跑一次。')
@@ -250,6 +329,30 @@ console.log(`  code=${out.code} message=${out.message ?? ''}`)
 if (out.code === 0) {
   const rpid = out.data?.rpid_str ?? out.data?.rpid
   console.log(`  ✅ 已发布，评论 rpid=${rpid}`)
+  // 图片回读：服务端到底收了几张（content.pictures），调用方据此决定要不要留下这条评论
+  if (PICTURES) {
+    const got = out.data?.reply?.content?.pictures ?? []
+    const n = Array.isArray(got) ? got.length : 0
+    const drop = Math.max(0, PICTURES.length - n)
+    console.log(`PIC_TOTAL=${PICTURES.length}`)
+    console.log(`PIC_OK=${n}`)
+    console.log(`PIC_DROP=${drop}`)
+    if (drop > 0) console.log(`  ⚠️ 有 ${drop} 张图没进评论 —— 服务端只回读了 ${n} 张`)
+  }
+  // 自定义表情回读（旧实验，留着只为排查；正常不该再走到这里）
+  if (CUSTOM_EMOTES) {
+    const got = Object.keys(out.data?.reply?.content?.emote ?? {})
+    const keys = Object.keys(CUSTOM_EMOTES)
+    const missing = keys.filter((k) => !got.includes(k))
+    console.log(`EMOTE_CUSTOM_TOTAL=${keys.length}`)
+    console.log(`EMOTE_CUSTOM_DROP=${missing.length}`)
+    if (missing.length) {
+      console.log(`EMOTE_CUSTOM_MISSING=${missing.join(',')}`)
+      console.log(`  ⚠️ 服务端没认这几个自定义表情 —— 评论里只会剩字面 ${missing.join('')}`)
+    } else {
+      console.log('  ✓ 服务端接受了自定义表情（content.emote 里带回同一批键）')
+    }
+  }
   // once-per-person：记一笔"回过谁"，下次判重用
   if (ONCE && parent && root) {
     try {

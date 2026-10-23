@@ -16,6 +16,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { config } from '../lib/config.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
+import { find as findSticker } from '../lib/stickers.mjs'
+import { uploadImage } from '../lib/upload.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -36,6 +38,10 @@ const DRY = !!opt.dry
 const GO = !!opt.go
 const STATUS = !!opt.status
 const MSG = String(opt.msg ?? '').trim()
+// --image（2026-10-21 加）：私信发图。给库里的名字（stickers sync 建的索引）或直接给路径。
+//   为什么私信能发图、评论不能：评论接口只有 message+emote（官方表情），没有图片字段 ✗；
+//   私信走 web_im/send_msg，msg_type=2 就是图片消息 ✓（图片先经动态的 upload_bfs 传到 B 站 CDN）
+const IMAGE = String(opt.image ?? '').trim()
 
 const HOME = process.env.USERPROFILE || process.env.HOME || '.'
 const CRED = path.join(HOME, '.bili-ai', 'credentials.json')
@@ -95,6 +101,37 @@ async function send(toMid, text) {
   return { http: r.status, code: j.code, message: j.message, data: j.data }
 }
 
+async function sendImage(toMid, img) {
+  const body = new URLSearchParams()
+  body.set('msg[sender_uid]', String((await me()).mid))
+  body.set('msg[receiver_id]', String(toMid))
+  body.set('msg[receiver_type]', '1')
+  body.set('msg[msg_type]', '2')          // 2 = 图片消息
+  body.set('msg[msg_status]', '0')
+  body.set('msg[timestamp]', String(Math.floor(Date.now() / 1000)))
+  body.set('msg[dev_id]', 'WEB-' + crypto.randomUUID().toUpperCase())
+  body.set('msg[content]', JSON.stringify({
+    url: img.url,
+    height: img.height,
+    width: img.width,
+    imageType: img.type,
+    size: img.size,
+    original: 1,
+  }))
+  body.set('csrf', String(cred.bili_jct))
+  const r = await fetch('https://api.vc.bilibili.com/web_im/v1/web_im/send_msg', {
+    method: 'POST',
+    headers: { ...H, 'content-type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+  const j = await r.json().catch(() => ({}))
+  return { http: r.status, code: j.code, message: j.message, data: j.data }
+}
+
+/** 先传到 B 站 CDN（复用动态的上传口），拿到图片 URL 再塞进私信。
+ *  2026-10-22：实现搬到 ../lib/upload.mjs（评论里的"自定义表情"也要用它，别抄两份 ✗） */
+const uploadSticker = (s) => uploadImage(s, cred)
+
 if (STATUS) {
   const q = loadQ()
   const lockedToday = q.date === today() ? String(q.mid ?? '') : ''
@@ -108,11 +145,25 @@ if (STATUS) {
   process.exit(0)
 }
 
-if (!MSG) { console.error('用法: node dm.mjs --msg "…" [--share --target BV…] --dry|--go   |   --status'); process.exit(2) }
+if (!MSG && !IMAGE) { console.error('用法: node dm.mjs --msg "…" 或 --image "<贴纸名>" [--share --target BV…] --dry|--go   |   --status'); process.exit(2) }
 
 // ── 闸门（写死，不接受参数覆盖）──────────────────────────────────────
 if (!OWNER) { console.error('✗ 配置里 owner.mid 为空 —— 私信只发给主人，没配就不发'); process.exit(2) }
 if (MSG.length > 300) { console.error(`✗ 私信太长（${MSG.length} > 300 字），退化成刷屏了 ✗`); process.exit(2) }
+
+// 贴纸（--image）：只认 png/jpg/gif；先确认存在，别等发到一半才炸
+let sticker = null
+if (IMAGE) {
+  sticker = findSticker(IMAGE)
+  if (!sticker) {
+    console.error(`✗ 没有叫「${IMAGE}」的贴纸 —— 先 node bili.mjs stickers sync --dir "<目录>"，或 stickers list 看看`)
+    process.exit(2)
+  }
+  if (!['png', 'jpg', 'gif'].includes(sticker.type)) {
+    console.error(`✗ 这个格式 B 站不收（${sticker.type}）—— 只能 png/jpg/gif`)
+    process.exit(2)
+  }
+}
 
 const meInfo = await me()
 if (String(meInfo.mid) === ONLY_TO) { console.error('✗ 不能给自己发私信'); process.exit(2) }
@@ -134,10 +185,14 @@ if (ONE_TARGET_PER_DAY && q.date === today() && q.mid && String(q.mid) !== ONLY_
 }
 
 console.log(`[dm] ${meInfo.uname} → ${OWNER_NAME}（mid ${ONLY_TO}）`)
-console.log(`  正文 ${MSG.length} 字：${MSG.slice(0, 80)}${MSG.length > 80 ? '…' : ''}`)
+if (MSG) console.log(`  正文 ${MSG.length} 字：${MSG.slice(0, 80)}${MSG.length > 80 ? '…' : ''}`)
+if (sticker) console.log(`  图片：${sticker.name}（${sticker.type} ${sticker.width}x${sticker.height} ${(sticker.bytes / 1024).toFixed(0)}KB）`)
 console.log(`  互关 ✓  ·  今天第 ${used + 1} 条（条数不限 ✓ 锁定给 ${OWNER_NAME} ✓）`)
 
-if (DRY) { console.log('  [dry] 未发送 ✓ 确认后把 --dry 换成 --go'); process.exit(0) }
+if (DRY) {
+  if (sticker) console.log('  [dry] 图片会先传到 B站 CDN（upload_bfs），再以 msg_type=2 发出；dry 阶段一次请求都不发 ✓')
+  console.log('  [dry] 未发送 ✓ 确认后把 --dry 换成 --go'); process.exit(0)
+}
 if (!GO) { console.error('✗ 必须给 --dry 或 --go'); process.exit(2) }
 
 // ④ 分享型先过闸（日上限 / 同一视频 7 天一次 / 评分卡 …由 quota 统一管 ✓）
@@ -145,10 +200,42 @@ if (SHARE) {
   const ok = gate({ type: 'dm', target: SHARE_TARGET, auto: true, share: true })
   if (!ok) { console.error('✗ 分享额度不允许（见上面的 [限额闸] 输出）'); process.exit(4) }
 }
-const r = await send(ONLY_TO, MSG)
+
+// 先文字（如果有），再图片 —— 顺序反了的话图会盖住正文
+let last = null
+if (MSG) {
+  last = await send(ONLY_TO, MSG)
+  if (last.code !== 0) { console.error(`  ✗ 文字发送失败：HTTP ${last.http} code=${last.code} ${last.message ?? ''}`); process.exit(1) }
+}
+if (sticker) {
+  console.log(`  [图] 上传 ${sticker.name} …`)
+  let img
+  try { img = await uploadSticker(sticker) } catch (e) { console.error(`  ✗ ${e.message}`); process.exit(5) }
+  console.log(`       ${img.url}  ${img.width}x${img.height}  ${img.size}KB`)
+  last = await sendImage(ONLY_TO, img)
+}
+const r = last ?? { code: -1, http: 0, message: '没有可发的内容' }
 if (r.code === 0) {
   saveQ({ date: today(), count: used + 1, mid: ONLY_TO, at: new Date().toISOString() })
-  if (SHARE) record({ type: 'dm', target: SHARE_TARGET, note: MSG.slice(0, 40), auto: true, share: true })
+  if (SHARE) record({ type: 'dm', target: SHARE_TARGET, note: (MSG || `[图] ${sticker?.name ?? ''}`).slice(0, 40), auto: true, share: true })
+  // 2026-10-21 v0.7：发给主人的私信**同步进本地收件箱** ——
+  //   DSH 里的「鱼的私信」窗口能看到、能改、能选择发到评论区（要不要发由主人点）。
+  if (MSG && !opt['no-outbox']) {
+    try {
+      const { loadOutbox, saveOutbox, addItem } = await import('../lib/outbox.mjs')
+      const box = loadOutbox()
+      addItem(box, {
+        text: MSG,
+        bv: typeof SHARE_TARGET === 'string' ? SHARE_TARGET : '',
+        kind: 'dm',
+        note: SHARE ? '分享型私信（含视频）' : '',
+      })
+      saveOutbox(box)
+      console.log('  [收件箱] 已同步到 DSH「鱼的私信」窗口 ✓（可改后可发评论区）')
+    } catch (e) {
+      console.log(`  [收件箱] 同步失败（不影响已发出的私信）：${String(e.message).slice(0, 80)}`)
+    }
+  }
   console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : ' · 推送不占额度 ✓'}`)
   process.exit(0)
 }

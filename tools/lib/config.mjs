@@ -37,9 +37,23 @@ export const DEFAULTS = {
   // 「标尺」（2026-10-18 加）：分享前必须打分，不到 share.minScore 就是"今天没有值得发的"（合法结果）
   share: { enabled: true, via: 'comment', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },  // 分享型（@主人）开关与评分阈值
   // 倾听（2026-10-18 补默认值，与设置页对齐）：评论区 + 直播间
-  listen: { comment: true, commentIntervalSec: 300, scope: 'both', oncePerPerson: false, allDay: false, dm: false, live: false, liveRoom: '', liveScope: 'owner' },
+  listen: { comment: true, commentIntervalSec: 300, scope: 'both', oncePerPerson: false, allDay: false, dm: false, live: false, liveRoom: '', liveScope: 'owner', introDaily: 1, replyDm: false, replyDmDaily: 1, replyDmHours: 72, dmCostNote: true },
   // 作息：windows[] = 每天允许醒来的时段（每个窗口 = 一次机会）；maxWakesPerDay 缺省 = 窗口数（硬上限 3）
   night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], skipChance: 0.3, maxVideos: 5 },
+  // 指定清单（2026-10-21 v0.4）：主人点名的 UP / 视频 —— feed 里永远排最前（★）
+  //   ups: [{ mid, name }]   videos: [{ bv, note }]
+  //   ⚠️ 名字不是装饰：空间接口被风控时，降级到「按名字搜 + 用 mid 过滤」全靠它
+  watchlist: { ups: [], videos: [] },
+  // 预算（2026-10-21 v0.4）：单条回复是宿主侧 maxTokens 硬顶；单视频/单轮是"读之前先算账"
+  budget: { replyMaxTokens: 1200, videoMaxTokens: 12000, wakeMaxTokens: 60000 },
+  // 口味源（2026-10-21 v0.5）：从主人/自己的关注、收藏、历史里学口味 + 排除看过的
+  //   owner: 读主人账号的**公开**收藏与关注（零额外授权）；self: 读登录账号自己的收藏与历史
+  taste: {
+    enabled: true, owner: true, self: true,
+    useFollowing: true, useFavorites: true, useHistory: true,
+    maxFolders: 20, maxFavItems: 200, maxHistory: 60, recentDays: 30,
+    boostFollow: 6, boostTopic: 3, excludeFavorites: true, excludeHistory: true, selfWeight: 0.5,
+  },
 }
 
 const merge = (base, over) => {

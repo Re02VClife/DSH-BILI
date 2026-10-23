@@ -4,6 +4,8 @@
 //   不给 --go 就只打印将要发送的 payload（预演）。
 import fs from 'node:fs'
 import path from 'node:path'
+// 2026-10-21 修：下面用了 gate()，上游漏了这行 import（同 dynamic-image.mjs）
+import { gate } from '../lib/quota-gate.mjs'
 
 const dyn = process.argv[2]
 const textFile = process.argv[3]
