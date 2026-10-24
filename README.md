@@ -4,7 +4,7 @@
 >
 > **本 README 只写「我们加的」。** 上游自带的能力（生物钟、看懂视频、两本日记、分享、私信通道…）请看[原仓库](https://github.com/Alterssss/dsh-bili-whale)，这里不重复介绍。
 
-**v0.13.0 · 75 条测试全过 · MIT**
+**v0.13.1 · 76 条测试全过 · MIT**
 
 ```bash
 git clone https://github.com/Re02VClife/DSH-BILI.git

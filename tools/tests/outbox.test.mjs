@@ -7,7 +7,7 @@ import path from 'node:path'
 import {
   emptyOutbox, addItem, patchItem, setStatus, findItem, effectiveText, stats, prune,
   normalizeBv, clampText, normalizeEmote, normalizeEmotes, emotesOf, normalizeMentions, normalizeStickers,
-  saveOutbox, loadOutbox, MAX_ITEMS,
+  saveOutbox, loadOutbox, MAX_ITEMS, looksLikeReport,
 } from '../lib/outbox.mjs'
 
 test('normalizeBv / clampText：BV 从任意文本里抠；正文裁到评论上限', () => {
@@ -15,6 +15,14 @@ test('normalizeBv / clampText：BV 从任意文本里抠；正文裁到评论上
   assert.equal(normalizeBv('没有'), '')
   assert.equal(clampText('  a\r\nb  '), 'a\nb')
   assert.equal(clampText('字'.repeat(1500)).length, 1000)
+})
+
+test('looksLikeReport：写给主人的汇报会被认出来；正常评论与分享文不误伤', () => {
+  assert.equal(looksLikeReport('有 1 条回复待你审核：池锦游鱼 回了「依旧贪吃」——发不发你点。'), '待你审核')
+  assert.equal(looksLikeReport('我写了草稿「怪白饭，不怪我。」'), '我写了草稿')
+  assert.equal(looksLikeReport('怪白饭，不怪我。下次给你留一口。'), '', '评论正文不该被误伤')
+  assert.equal(looksLikeReport('主人，这条想给你看：7 分钟的 AI 短片'), '', '分享文是正当的 dm，不拦')
+  assert.equal(looksLikeReport(''), '')
 })
 
 test('addItem：空正文不入箱；10 分钟内同一条只留一行', () => {

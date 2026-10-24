@@ -16,7 +16,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   loadOutbox, saveOutbox, addItem, patchItem, setStatus, findItem, effectiveText, stats, normalizeBv, clampText,
-  normalizeEmotes, emotesOf,
+  normalizeEmotes, emotesOf, looksLikeReport,
 } from '../lib/outbox.mjs'
 import { loadTasks, saveTasks, setTaskStatus, syncFromDraft } from '../lib/tasks.mjs'
 import { detect as detectEmotes } from '../lib/emotes.mjs'
@@ -97,6 +97,13 @@ if (cmd === 'post') {
   if (!bv) { console.error('没有目标视频：给 --bv，或在窗口里填一个 BV'); process.exit(2) }
   let text = clampText(readText() || effectiveText(item))
   if (!text) { console.error('正文是空的'); process.exit(2) }
+  // 2026-10-24 v0.13.1：元话语 = 她在对主人说话，不是评论正文（事故见 lib/outbox.mjs 注释）
+  const reportHit = looksLikeReport(text)
+  if (reportHit) {
+    console.error(`✗ 正文里有「${reportHit}」——这是她给你的汇报，不是要发出去的评论`)
+    console.error('  把真正要发的那一句单独写进正文（`--text-file`），再 post')
+    process.exit(2)
+  }
 
   // aid 是 comment 接口的必填（oid），从 view 拿
   let aid = ''

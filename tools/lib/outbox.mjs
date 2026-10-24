@@ -187,6 +187,18 @@ export function findItem(data, id) {
   return (data.items ?? []).find((x) => x.id === id) ?? null
 }
 
+// 2026-10-24 v0.13.1：把「写给主人看的汇报」和「要发出去的评论正文」分开。
+//   事故：一条 kind=dm 的「有 1 条回复待你审核：… 我写了草稿「…」——发不发你点。」
+//   被窗口当成待审评论，差一点原样发到评论区（主人在点之前看了一眼，发现的）。
+//   为什么用词表而不是 kind：dm 里也有正当的分享文（「主人，这条想给你看」），
+//   那种改一改**可以**发评论区 —— 真正该拦的是**元话语**（对主人说的流程话）。
+const REPORT_PHRASES = ['待你审核', '发不发你点', '发不发你定', '我写了草稿', '请你审']
+/** 像「给主人的汇报」吗？返回命中的那个词（空串 = 不像）。 */
+export function looksLikeReport(text) {
+  const s = String(text ?? '')
+  return REPORT_PHRASES.find((w) => s.includes(w)) ?? ''
+}
+
 /** 要发出去的正文：主人改过就用改的，没改就用原文。 */
 export function effectiveText(item) {
   if (!item) return ''
