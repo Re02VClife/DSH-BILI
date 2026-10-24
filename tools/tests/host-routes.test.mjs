@@ -91,7 +91,8 @@ test('宿主路由：任务台 派活/立刻做/取消/删除 + 收件箱，全�
     // 读：格式清单由后端给（窗口不抄一份）
     const t0 = await call(routes, 'GET', '/dsh-bili/api/task')
     assert.equal(t0.code, 200)
-    assert.equal(t0.json.formats.length, 6)
+    assert.equal(t0.json.formats.length, 7, '六种短评 + 知识区深度分析')
+    assert.ok(t0.json.formats.some((f) => f.id === 'deep'), '知识区的「深度分析」要在清单里（否则窗口里选不到）')
     assert.ok(t0.json.formats.some((f) => f.id === 'timeline' && f.label === '时间轴'))
     assert.deepEqual(t0.json.tasks, [])
     assert.equal(t0.json.labels.timeline, undefined, 'labels 只该有状态')

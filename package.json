@@ -1,7 +1,7 @@
 {
   "name": "dsh-bili-whale",
-  "version": "0.12.1",
-  "description": "DSH-BILI（fork 自 dsh-bili-whale）：在 DeepSeek Harness 里养一条有日子的鱼。v0.4 指定清单+预算；v0.5 口味源；v0.6 本地转写；v0.7 私信窗口；v0.8 任务台；v0.9 表情库 + @；v0.10 表情包；v0.11 评论带图；v0.12 回复私信 + 消耗备注。",
+  "version": "0.13.0",
+  "description": "DSH-BILI（fork 自 dsh-bili-whale）：在 DeepSeek Harness 里养一条有日子的鱼。v0.4 指定清单+预算；v0.5 口味源；v0.6 本地转写；v0.7 私信窗口；v0.8 任务台；v0.9 表情库 + @；v0.10 表情包；v0.11 评论带图；v0.12 回复私信 + 消耗备注；v0.13 知识区深度分析。",
   "scripts": {
     "test": "node --test tools/tests/watchlist.test.mjs tools/tests/budget.test.mjs tools/tests/scheduler.test.mjs tools/tests/subtitles.test.mjs tools/tests/taste.test.mjs tools/tests/outbox.test.mjs tools/tests/tasks.test.mjs tools/tests/intro.test.mjs tools/tests/dm-reply.test.mjs tools/tests/host-routes.test.mjs"
   },

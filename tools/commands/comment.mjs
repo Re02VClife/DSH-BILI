@@ -267,6 +267,32 @@ let emoteParam = null
   if (Object.keys(map).length) emoteParam = JSON.stringify(map)
 }
 
+// ── 分区与字数闸（2026-10-24 主人定）─────────────────────────────────────
+// 「知识区的视频评论可以像 500 字报告那样」—— 知识区放宽到 1000（B站 评论上限），
+// 其他区保持短评 300。以前这里**一个字都不管**：人设写着「宁短勿长」，代码却不拦，
+// 两边打架，结果是一条 500 字长评混着两个版本的数据发了出去（2026-10-24 事故）。
+// 判定只看 tid：`tname` 在新接口里**经常是空串**（实测 BV1WknN6rEE9 tid=208 tname=""），
+// 拿 tname 判断会把知识区全漏掉 ✗
+let vidTid = 0
+if (bvid) {
+  try {
+    const v = await (await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`, {
+      headers: { 'user-agent': UA, referer: `https://www.bilibili.com/video/${bvid}/` },
+    })).json()
+    vidTid = Number(v?.data?.tid ?? 0)
+  } catch { /* 查不到就按非知识区算（保守：宁可让她砍短，也别放一条被折叠的长评出去） */ }
+}
+const KNOWLEDGE = vidTid >= 201 && vidTid <= 208   // 科学科普…野生技能协会
+const msgLen = [...String(message)].length
+const msgCap = KNOWLEDGE ? 1000 : 300
+console.log(`[分区] tid=${vidTid || '?'} ${KNOWLEDGE ? '知识区 → 深度分析可写到 1000 字' : '非知识区 → 短评 ≤300 字'}（当前 ${msgLen} 字）`)
+if (msgLen > msgCap) {
+  console.error(`✗ ${KNOWLEDGE ? '知识区' : '非知识区'}评论上限 ${msgCap} 字，现在是 ${msgLen} 字`)
+  if (!KNOWLEDGE) console.error('  （只有知识区 tid 201–208 允许 500+ 字的深度分析；这条要么砍短，要么换 `task` 的 deep 格式重新组织）')
+  process.exit(2)
+}
+if (!KNOWLEDGE && msgLen > 200) console.log(`  ⚠️ ${msgLen} 字对非知识区偏长，评论区更容易被折叠；能砍到 200 以内更稳`)
+
 const params = { type, oid: String(oid), message, plat: '1', csrf: String(cred.bili_jct) }
 if (PICTURES) {
   params.pictures = JSON.stringify(PICTURES.map((p) => ({

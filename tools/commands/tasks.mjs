@@ -2,7 +2,7 @@
 //
 // 用法:
 //   node bili.mjs task list [--status todo] [--json]
-//   node bili.mjs task add --bv BV… [--format outline|timeline|opinion|banter|links|custom]
+//   node bili.mjs task add --bv BV… [--format outline|timeline|opinion|banter|links|deep|custom]
 //                          [--chars 280] [--instruction "额外要求"] [--emote] [--mention]
 //   node bili.mjs task take <id>        # 领活：状态→running，并打印"怎么干"的说明
 //   node bili.mjs task prompt <id>      # 只看说明，不改状态

@@ -24,6 +24,16 @@ test('FORMATS：id 唯一、每种都有 spec 和反例（格式是这个功能�
   assert.equal(formatOf('不存在').id, FORMATS[0].id, '认不出的格式落回第一个，不炸')
 })
 
+test('deep 格式：知识区长评专用 —— 够长、要机制/数据/边界、明写不许贴外链和论文号', () => {
+  const f = formatOf('deep')
+  assert.equal(f.id, 'deep')
+  assert.ok(f.chars >= 500 && f.chars <= 1000, '深度分析要够长，但不能超 B站 评论上限')
+  const spec = f.spec.join('')
+  assert.match(spec, /外链/, '必须明写不许贴外链（外链会拖审核、也会把评论变成推广）')
+  assert.match(spec, /arXiv|DOI/, '必须明写不许贴论文号')
+  assert.match(spec, /边界|不成立/, '长评必须写到边界，否则只是把短评稀释成 800 字')
+})
+
 test('addTask：没有 BV 就报错（不是"提交成功但列表空着"）；从链接里抠 BV；字数夹区间', () => {
   const d = emptyTasks()
   const bad = addTask(d, { bv: '没有视频', format: 'outline' })
