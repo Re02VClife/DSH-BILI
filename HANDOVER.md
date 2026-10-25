@@ -1,4 +1,4 @@
-# 交接文档 —— dsh-bili-whale（2026-10-24，v0.13.1）
+# 交接文档 —— dsh-bili-whale（2026-10-24，v0.14.0）
 
 > 写给**接手这个插件的人或 agent**。目标：30 分钟内能改代码、知道坑在哪、不重复踩。
 > 先读三节：**0 现状**、**6 不能碰的边界**、**8 踩过的坑**。其余当字典查。
@@ -12,8 +12,8 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | **0.13.1**（package.json；客户端标题右边也印着） |
-| 测试 | `node --test tools/tests/*.test.mjs` → **76 条全过**（2026-10-24） |
+| 版本 | **0.14.0**（package.json；客户端标题右边也印着） |
+| 测试 | `node --test tools/tests/*.test.mjs` → **78 条全过**（2026-10-24） |
 | 代码位置 | `C:\Users\24628\Desktop\vscode\bilibili\dsh-bili-whale` |
 | **Git 状态** | v0.12.1 已在 `bb6a7ac` 提交；之后按版本逐个 commit（别攒着，见「第一件事」） |
 | 运行方式 | 装在 DSH 的 desktop profile（`~/.dsh/profiles/desktop`），插件宿主常驻，生物钟每 60s tick |
@@ -23,8 +23,8 @@
 
 ```bash
 cd dsh-bili-whale
-git add -A && git commit -m "feat: v0.13.1 —— 知识区深度分析（deep 格式 + 分区字数闸）"
-git tag v0.13.1
+git add -A && git commit -m "feat: v0.14.0 —— 知识区深度分析（deep 格式 + 分区字数闸）"
+git tag v0.14.0
 ```
 
 > 为什么强调：v0.10 时 `lib/client.js` 被一次编码事故整篇毁掉，**因为没有提交、没有备份，只能整份重写**。
@@ -167,6 +167,7 @@ dsh-bili-whale/
 | v0.12 | 回复私信（`dm-reply`）、末尾消耗/额度备注（自动 + 开关） |
 | v0.13 | 知识区深度分析：`deep` 格式（任务台第 7 种）+ `comment` 分区字数闸（知识区 ≤1000 / 其他 ≤300）。**分区只看 `tid`（201–208），`tname` 在新接口上是空串** |
 | v0.13.1 | 修「汇报被当评论发」：`looksLikeReport()` 拦元话语（窗口 / 路由 / CLI 三处共用词表）。`dm` 本身仍可改发评论区（分享型私信就是这条路），拦的是「待你审核」这类对主人说的话 |
+| v0.14 | **记忆库**（文件化 + 按需检索）：`memory` 命令 + `~/.dsh/whale-memory/`（facts / people / open-loops / index）；唤醒时只读 `index.md`，不再全读日记。配套：压缩链路打开（thresholdRatio 0.5 + tool-result-pruner） |
 
 ---
 
@@ -229,7 +230,7 @@ DSH 的 Electron 磁盘缓存里**找不到**插件源码（已验证），不�
   `rgba(127,127,127,.22)` 底 + `label-primary` 字 + 深边框。
 - 宿主只提供 `--dsw-alias-label-primary/secondary`（**没有 tertiary**），用错等于颜色没定义。
 - 面板宽度是自适应的（`max-width:1280px`）；贴纸预览 92px；表情面板 `resize:vertical`。
-- 改完客户端要**重启 DSH + 刷新页面**；标题右边的版本号（`v0.13.1`）用来确认是不是新 bundle。
+- 改完客户端要**重启 DSH + 刷新页面**；标题右边的版本号（`v0.14.0`）用来确认是不是新 bundle。
 
 ---
 
@@ -276,7 +277,7 @@ node --test tools/tests/watchlist.test.mjs tools/tests/budget.test.mjs \
 
 **下一步建议（按价值排序）**
 
-1. **先 commit**，然后打 tag `v0.13.1`。
+1. **先 commit**，然后打 tag `v0.14.0`。
 2. 任务台「批量派活」（一个 BV 列表 + 一种格式）。
 3. 定时任务（"每天 8 点给这条重写一版"）。
 4. 评论配图实测 + 失败自动回滚（已有 `PIC_DROP` 回读，验证一次就够）。
@@ -286,10 +287,10 @@ node --test tools/tests/watchlist.test.mjs tools/tests/budget.test.mjs \
 
 ## 13. 交接自查清单
 
-- [ ] `git log` 能看到 v0.13.1 的提交
-- [ ] 测试 76 pass
+- [ ] `git log` 能看到 v0.14.0 的提交
+- [ ] 测试 78 pass
 - [ ] 设置页能打开、能保存（保存后 `bili-whale.config.json` 真的变了）
-- [ ] 🐟 窗口两个标签页都能开，标题右边显示 `v0.13.1`
+- [ ] 🐟 窗口两个标签页都能开，标题右边显示 `v0.14.0`
 - [ ] `node bili.mjs intro` / `dm-reply --list` / `task list` 三条都正常
 - [ ] `~/AGENTS.md` 存在，且第一个小节是「每次醒来先做这三件」
 - [ ] 知道三件"绝对不要做"：放宽 `dm`、给 `task` 加发布、用 PowerShell 改源码

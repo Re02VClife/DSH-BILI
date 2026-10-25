@@ -65,6 +65,7 @@ for (const kw of prefs.slice(0, 6)) {
         pool.push({
           bv: it.bvid, t: String(it.title).replace(/<[^>]+>/g, ''), d: secs(it.duration),
           dm: Number(it.danmaku ?? 0), play: Number(it.play ?? 0), up: it.author, kw,
+          like: Number(it.like ?? 0), fav: Number(it.favorites ?? 0),
         })
       }
     } catch { /* 这个词没结果就跳过 */ }
@@ -80,14 +81,16 @@ async function fetchPopular() {
   const j = await (await fetch('https://api.bilibili.com/x/web-interface/popular?pn=1&ps=20', { headers: H })).json()
   for (const it of (j?.data?.list ?? [])) {
     pool.push({ bv: it.bvid, t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: Number(it.stat?.danmaku ?? 0), play: Number(it.stat?.view ?? 0), up: it.owner?.name ?? '', kw: '热门' })
+      dm: Number(it.stat?.danmaku ?? 0), play: Number(it.stat?.view ?? 0), up: it.owner?.name ?? '', kw: '热门',
+      like: Number(it.stat?.like ?? 0), fav: Number(it.stat?.favorite ?? 0) })
   }
 }
 async function fetchRank() {
   const j = await (await fetch('https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all', { headers: H })).json()
   for (const it of (j?.data?.list ?? []).slice(0, 20)) {
     pool.push({ bv: it.bvid, t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: Number(it.stat?.danmaku ?? 0), play: Number(it.stat?.view ?? 0), up: it.owner?.name ?? '', kw: '排行' })
+      dm: Number(it.stat?.danmaku ?? 0), play: Number(it.stat?.view ?? 0), up: it.owner?.name ?? '', kw: '排行',
+      like: Number(it.stat?.like ?? 0), fav: Number(it.stat?.favorite ?? 0) })
   }
 }
 // 关注的人发了什么（2026-10-18 加）：真人才会"刷关注"——只搜关键词等于只刷"搜索"，不像人
@@ -102,7 +105,8 @@ async function fetchFollowing() {
     const p = dt.split(':').map(Number)
     const secs = p.length === 2 ? p[0] * 60 + p[1] : p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : 0
     pool.push({ bv: ar.bvid, t: String(ar.title ?? '').replace(/<[^>]+>/g, ''), d: secs,
-      dm: 0, play: Number(ar.stat?.play ?? 0), up: a?.name ?? '', kw: '关注' })
+      dm: 0, play: Number(ar.stat?.play ?? 0), up: a?.name ?? '', kw: '关注',
+      like: Number(ar.stat?.like ?? 0), fav: Number(ar.stat?.favorite ?? 0) })
   }
 }
 try { if (SOURCE_HOT === 'popular' || SOURCE_HOT === 'all') await fetchPopular() } catch { console.error('（热门源取不到，跳过）') }
@@ -211,9 +215,27 @@ const dedup = [...new Map(pool.map((x) => [x.bv, x])).values()]
   .filter((x) => !seen.has(x.bv) && !likedBVs.has(x.bv) && !favBVs.has(x.bv))
   .filter((x) => !(selfName && String(x.up ?? "").includes(selfName)))
 const tasteSkipped = tIdx ? dedup.filter((x) => tasteExcluded(x, tIdx, tasteCfg)).length : 0
+// ── 硬门槛（2026-10-25 主人定）：播放太少、或点赞比例太低的，直接不看 ───────────
+//   为什么加：2026-10-20 把播放量从评分里移出后，`order=pubdate` 那一路会把刚上传、
+//   零互动的稿子捞进候选池；标题命中偏好词就能拿满权重 → feed 天天推 0 播放的新稿。
+//   门槛只做「剔除」，不改评分公式（评分仍然不看播放量，主人定的方向不动 ✓）。
+//   可调：bili-whale.config.json → feed.minPlay / feed.minLikeRate
+const feedCfg = config().feed ?? {}
+const MIN_PLAY = Number(feedCfg.minPlay ?? 500)
+const MIN_LIKE_RATE = Number(feedCfg.minLikeRate ?? 0.02)
+const gateDropped = { lowPlay: 0, lowLike: 0, unknownLike: 0 }
+const passesGate = (x) => {
+  if (x.kw === '指定视频') return true                      // 主人点名的，必看
+  if (!(Number(x.play) >= MIN_PLAY)) { gateDropped.lowPlay += 1; return false }
+  // 关注源不返回 like；缺数据不算「比例过低」，放行但记数（别把关注的人一刀切掉 ✗）
+  if (!Number(x.like)) { gateDropped.unknownLike += 1; return true }
+  if (Number(x.like) / Number(x.play) < MIN_LIKE_RATE) { gateDropped.lowLike += 1; return false }
+  return true
+}
 const uniq = dedup
   .filter((x) => !forced.some((f) => f.bv === x.bv))
   .filter((x) => !(tIdx && tasteExcluded(x, tIdx, tasteCfg)))
+  .filter(passesGate)
 uniq.sort((a, b) => scoreOf(b) - scoreOf(a))
 for (const x of uniq) { x._hits = hitsOf(x.t); x._score = scoreOf(x) }
 
@@ -234,7 +256,9 @@ console.log(`反馈回流: 被赞 ${likedEvents.length} 条 · 她收藏 ${favIt
 console.log(`口味源: ${taste ? tasteSummary(taste) : '未启用（设置页「口味源」打开，或跑 taste sync）'}`)
 console.log(`已看过/已评论过（已排除）: ${seen.size} 个 BV${tasteSkipped ? ` · 口味档案再排除 ${tasteSkipped} 条` : ''}`)
 console.log(`指定清单: UP ${wl.ups.length} 个 · 视频 ${wl.videos.length} 条 → 本轮可用 ${forced.length} 条`)
-console.log(`候选池: ${pool.length} 条 → 去重去已看后 ${uniq.length} 条\n`)
+console.log(`候选池: ${pool.length} 条 → 去重去已看后 ${uniq.length} 条` +
+  `（硬门槛剔除 ${gateDropped.lowPlay + gateDropped.lowLike}：播放<${MIN_PLAY} ${gateDropped.lowPlay} · 点赞率<${(MIN_LIKE_RATE * 100).toFixed(0)}% ${gateDropped.lowLike}` +
+  `${gateDropped.unknownLike ? ` · 无点赞数据放行 ${gateDropped.unknownLike}` : ''}）\n`)
 console.log(`今天可以看这几条（★ = 你点名的，必看；其余每词最多 ${PER} 条，共 ${N} 条）：`)
 let shown = 0
 const printed = new Set()
