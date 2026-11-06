@@ -19,19 +19,28 @@ function run(dir, args) {
   return { code: r.status ?? 1, out: String(r.stdout ?? '') + String(r.stderr ?? '') }
 }
 
+// 用「今天」而不是写死的日期：索引只收最近 7 天的事实，
+// 写死的日期过一周就会让这条测试变红（2026-11-06 修 ✓）。
+function today() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 test('memory：事实/人际/未完成三类入库，索引自动汇总，重复不写两遍', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whale-mem-'))
+  const DAY = today()
   try {
-    assert.equal(run(dir, ['add', 'fact', '测试事实', '--tag', 'AI', '--date', '2026-10-26']).code, 0)
-    assert.equal(run(dir, ['add', 'fact', '测试事实', '--tag', 'AI', '--date', '2026-10-26']).code, 0)
+    assert.equal(run(dir, ['add', 'fact', '测试事实', '--tag', 'AI', '--date', DAY]).code, 0)
+    assert.equal(run(dir, ['add', 'fact', '测试事实', '--tag', 'AI', '--date', DAY]).code, 0)
     const facts = fs.readFileSync(path.join(dir, 'facts.md'), 'utf8')
     assert.equal(facts.split('\n').filter((l) => l.startsWith('- [')).length, 1, '同一行不该写两遍')
-    assert.match(facts, /- \[2026-10-26\] 测试事实 #AI/)
+    assert.match(facts, new RegExp(`- \\[${DAY}\\] 测试事实 #AI`))
 
     assert.equal(run(dir, ['add', 'person', '甲', '说了句话', '--uid', '42']).code, 0)
     assert.match(fs.readFileSync(path.join(dir, 'people.md'), 'utf8'), /## 甲（UID 42）/)
 
-    assert.equal(run(dir, ['add', 'loop', '待办 A', '--date', '2026-10-26']).code, 0)
+    assert.equal(run(dir, ['add', 'loop', '待办 A', '--date', DAY]).code, 0)
     const idx = fs.readFileSync(path.join(dir, 'index.md'), 'utf8')
     assert.match(idx, /测试事实/, '事实要进索引')
     assert.match(idx, /待办 A/, '未完成要进索引')
@@ -39,7 +48,7 @@ test('memory：事实/人际/未完成三类入库，索引自动汇总，重复
 
     // 做完：保留原日期，改成 [x]
     assert.equal(run(dir, ['done', '待办 A']).code, 0)
-    assert.match(fs.readFileSync(path.join(dir, 'open-loops.md'), 'utf8'), /- \[x\] \[2026-10-26\] 待办 A/)
+    assert.match(fs.readFileSync(path.join(dir, 'open-loops.md'), 'utf8'), new RegExp(`- \\[x\\] \\[${DAY}\\] 待办 A`))
 
     // 检索：三份库都能搜到
     const s = run(dir, ['search', '测试事实'])
